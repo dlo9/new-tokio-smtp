@@ -1,9 +1,11 @@
 use std::{io as std_io};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use bytes::BufMut;
 use futures::Future;
 
+use ::data_types::Capability;
 use ::error::MissingCapabilities;
 use ::{
     Domain, EhloData, SyntaxError, EhloParam,
@@ -90,7 +92,21 @@ fn parse_ehlo_response(response: &Response) -> Result<EhloData, SyntaxError> {
     for line in lines[1..].iter() {
         let mut parts = line.split(" ");
         //UNWRAP_SAFE: Split has at least one entry
-        let capability = parts.next().unwrap().parse()?;
+        let capability_candidate = parts.next().unwrap();
+        let capability = match capability_candidate.parse::<Capability>() {
+            e @ Err(SyntaxError::EsmtpKeyword) => {
+                // Ignore broken duplicate AUTH capability which servers may declare to be compatible
+                // with old Outlook clients. Postfix servers use this behavior with the
+                // [broken_sasl_auth_clients](http://www.postfix.org/postconf.5.html#broken_sasl_auth_clients)
+                // configuration option.
+                if capability_candidate.split("=").next().map(Capability::from_str) == Some(Ok(Capability::from_str("AUTH").unwrap())) {
+                    continue;
+                } else {
+                    e
+                }
+            },
+            r @ _ => r,
+        }?;
         let params = parts.map(|part| part.parse()).collect::<Result<Vec<EhloParam>, _>>()?;
         caps.insert(capability, params);
     }
@@ -105,6 +121,8 @@ mod test {
     mod parse_ehlo_response {
         use ::Response;
         use ::response::codes::OK;
+        use ::SyntaxError;
+        use data_types::EhloParam;
         use super::super::parse_ehlo_response;
 
         #[test]
@@ -155,6 +173,31 @@ mod test {
             let params = ehlo_data.get_capability_params("X-NOT-A-ROBOT").unwrap();
             assert_eq!(params.len(), 1);
             assert_eq!(params[0], "ENABLED");
+        }
+
+        #[test]
+        fn malformed_auth_ignored() {
+            let response = Response::new(OK, vec![
+                "1aim.test says hy".to_owned(),
+                "AUTH PLAIN LOGIN".to_owned(),
+                "AUTH=PLAIN".to_owned(),
+            ]);
+            let ehlo_data = parse_ehlo_response(&response).unwrap();
+
+            assert_eq!(ehlo_data.domain(), "1aim.test");
+            assert!(ehlo_data.has_capability("AUTH"));
+            assert_eq!(Some(["PLAIN".parse::<EhloParam>().unwrap(), "LOGIN".parse().unwrap()].as_ref()), ehlo_data.get_capability_params("AUTH"));
+            assert_eq!(ehlo_data.capability_map().len(), 1)
+        }
+
+        #[test]
+        fn malformed_non_auth_error() {
+            let response = Response::new(OK, vec![
+                "1aim.test says hy".to_owned(),
+                "X-NOT-A-ROBOT ENABLED".to_owned(),
+                "X-NOT-A-ROBOT=ENABLED".to_owned(),
+            ]);
+            assert_eq!(SyntaxError::EsmtpKeyword, parse_ehlo_response(&response).unwrap_err());
         }
     }
 }
