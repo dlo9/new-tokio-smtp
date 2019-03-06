@@ -47,7 +47,7 @@ pub struct EsmtpKeyword(IgnoreAsciiCaseString);
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct EsmtpValue(String);
 
-/// represents an EsmtpParam (syntax construct in ehlo response)
+/// represents an EhloParam (syntax construct in ehlo response)
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct EhloParam(String);
 
